@@ -1,0 +1,992 @@
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  Browsers
+} = require("@whiskeysockets/baileys");
+
+const pino = require("pino");
+const readline = require("readline");
+
+const {
+  saveGroup,
+  getGroups,
+  getEnabledGroups,
+  setMultipleEnabled
+} = require("./database/db");
+
+const SESSION_DIR = "./session";
+
+let restarting = false;
+let connectedAt = 0;
+let pairingRequested = false;
+
+function askQuestion(question) {
+  return new Promise(resolve => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+
+    rl.question(question, answer => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
+function isGroupJid(jid) {
+  return typeof jid === "string" && jid.endsWith("@g.us");
+}
+
+function getTextMessage(message) {
+  if (!message) return "";
+
+  return (
+    message.conversation ||
+    message.extendedTextMessage?.text ||
+    message.imageMessage?.caption ||
+    message.videoMessage?.caption ||
+    ""
+  );
+}
+
+function normalizeGroupName(name) {
+  if (!name || typeof name !== "string") {
+    return "Unnamed Group";
+  }
+
+  return name.trim() || "Unnamed Group";
+}
+
+function parseIndexes(input) {
+  if (!input) return [];
+
+  return [
+    ...new Set(
+      input
+        .split(",")
+        .map(item => item.trim())
+        .filter(Boolean)
+        .map(Number)
+        .filter(
+          number =>
+            Number.isInteger(number) &&
+            number > 0
+        )
+    )
+  ];
+}
+
+function formatGroupList(groups) {
+  if (!groups.length) {
+    return "📭 No groups found.";
+  }
+
+  let text = "📋 *YOUR GROUPS*\n\n";
+
+  groups.forEach((group, index) => {
+    const status = group.enabled
+      ? "🟢 ON"
+      : "🔴 OFF";
+
+    text += `${String(index + 1).padStart(2, "0")}. ${group.name}  ${status}\n`;
+  });
+
+  const enabled = groups.filter(
+    group => group.enabled
+  ).length;
+
+  const disabled = groups.length - enabled;
+
+  text += "\n";
+  text += `Total: ${groups.length}\n`;
+  text += `Enabled: ${enabled}\n`;
+  text += `Disabled: ${disabled}`;
+
+  return text;
+}
+
+async function refreshGroups(sock) {
+  try {
+    console.log("🔄 Refreshing groups...");
+
+    const groups =
+      await sock.groupFetchAllParticipating();
+
+    const groupList =
+      Object.values(groups);
+
+    for (const group of groupList) {
+      saveGroup(
+        group.id,
+        normalizeGroupName(group.subject)
+      );
+    }
+
+    console.log(
+      `✅ Groups saved: ${groupList.length}`
+    );
+
+    return getGroups();
+  } catch (error) {
+    console.error(
+      "❌ Could not refresh groups:",
+      error.message
+    );
+
+    return getGroups();
+  }
+}
+
+async function startBot() {
+  if (restarting) return;
+
+  const {
+    state,
+    saveCreds
+  } = await useMultiFileAuthState(
+    SESSION_DIR
+  );
+
+  const sock = makeWASocket({
+    auth: state,
+
+    browser: Browsers.ubuntu("Chrome"),
+
+    logger: pino({
+      level: "silent"
+    }),
+
+    markOnlineOnConnect: false,
+
+    syncFullHistory: false,
+
+    shouldSyncHistoryMessage: () => false,
+
+    printQRInTerminal: false
+  });
+
+  sock.ev.on(
+    "creds.update",
+    saveCreds
+  );
+
+  /*
+   * ==========================
+   * PAIRING CODE
+   * ==========================
+   */
+
+  if (
+    !state.creds.registered &&
+    !pairingRequested
+  ) {
+    pairingRequested = true;
+
+    try {
+      console.log("");
+      console.log(
+        "================================"
+      );
+      console.log(
+        "       WHATSAPP PAIRING"
+      );
+      console.log(
+        "================================"
+      );
+      console.log("");
+
+      let phoneNumber =
+        await askQuestion(
+          "📱 Enter WhatsApp number with country code (no +): "
+        );
+
+      phoneNumber =
+        phoneNumber.replace(/\D/g, "");
+
+      if (!phoneNumber) {
+        console.log(
+          "❌ Invalid phone number."
+        );
+        process.exit(1);
+      }
+
+      console.log("");
+      console.log(
+        "⏳ Generating pairing code..."
+      );
+
+      const code =
+        await sock.requestPairingCode(
+          phoneNumber
+        );
+
+      console.log("");
+      console.log(
+        "================================"
+      );
+      console.log(
+        `🔐 PAIRING CODE: ${code}`
+      );
+      console.log(
+        "================================"
+      );
+      console.log("");
+      console.log(
+        "WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number instead"
+      );
+      console.log("");
+    } catch (error) {
+      console.error(
+        "❌ Pairing failed:",
+        error.message
+      );
+
+      pairingRequested = false;
+    }
+  }
+
+  /*
+   * ==========================
+   * CONNECTION
+   * ==========================
+   */
+
+  sock.ev.on(
+    "connection.update",
+    async update => {
+      const {
+        connection,
+        lastDisconnect
+      } = update;
+
+      if (connection === "open") {
+        connectedAt =
+          Math.floor(Date.now() / 1000);
+
+        console.log("");
+        console.log(
+          "================================"
+        );
+        console.log(
+          "      WHATSAPP CONNECTED"
+        );
+        console.log(
+          "================================"
+        );
+        console.log("");
+
+        const groups =
+          await refreshGroups(sock);
+
+        console.log("");
+        console.log(
+          `👥 Groups found: ${groups.length}`
+        );
+        console.log("");
+        console.log(
+          "🤖 Bot is ready."
+        );
+        console.log(
+          "Type .help to see commands."
+        );
+        console.log("");
+      }
+
+      if (connection === "close") {
+        const statusCode =
+          lastDisconnect?.error?.output
+            ?.statusCode;
+
+        console.log("");
+        console.log(
+          "❌ WhatsApp connection closed:",
+          statusCode || "unknown"
+        );
+
+        if (
+          statusCode ===
+          DisconnectReason.loggedOut
+        ) {
+          console.log(
+            "⚠️ WhatsApp logged this device out."
+          );
+          console.log(
+            "Delete the session and pair again."
+          );
+          return;
+        }
+
+        if (!restarting) {
+          restarting = true;
+
+          console.log(
+            "🔄 Reconnecting..."
+          );
+
+          setTimeout(() => {
+            restarting = false;
+            startBot();
+          }, 3000);
+        }
+      }
+    }
+  );
+
+  /*
+   * ==========================
+   * MESSAGE HANDLER
+   * ==========================
+   */
+
+  sock.ev.on(
+    "messages.upsert",
+    async ({ messages, type }) => {
+      try {
+        if (
+          type !== "notify" &&
+          type !== "append"
+        ) {
+          return;
+        }
+
+        for (const msg of messages) {
+          if (!msg.message) continue;
+
+          const jid =
+            msg.key?.remoteJid;
+
+          if (!jid) continue;
+
+          /*
+           * Ignore group messages.
+           */
+          if (isGroupJid(jid)) {
+            continue;
+          }
+
+          /*
+           * Ignore old messages.
+           */
+          const timestamp = Number(
+            msg.messageTimestamp || 0
+          );
+
+          if (
+            connectedAt > 0 &&
+            timestamp > 0 &&
+            timestamp < connectedAt
+          ) {
+            continue;
+          }
+
+          /*
+           * Only the bot owner's own
+           * messages can execute commands.
+           */
+          if (msg.key?.fromMe !== true) {
+            continue;
+          }
+
+          const text =
+            getTextMessage(
+              msg.message
+            ).trim();
+
+          if (!text) continue;
+
+          if (!text.startsWith(".")) {
+            continue;
+          }
+
+          console.log(
+            "COMMAND:",
+            text
+          );
+
+          const parts =
+            text.split(/\s+/);
+
+          const command =
+            parts[0].toLowerCase();
+
+          const argument =
+            parts
+              .slice(1)
+              .join(" ")
+              .trim();
+
+          /*
+           * ==========================
+           * PING
+           * ==========================
+           */
+
+          if (command === ".ping") {
+            await sock.sendMessage(jid, {
+              text: "🏓 Pong!"
+            });
+
+            continue;
+          }
+
+          /*
+           * ==========================
+           * MENU / HELP
+           * ==========================
+           */
+
+          if (
+            command === ".help" ||
+            command === ".menu"
+          ) {
+            const menu = `
+🤖 *WHATSAPP BOT*
+
+📌 *GENERAL*
+.ping
+.help
+.menu
+.stats
+
+👥 *GROUP MANAGEMENT*
+.groups
+.refreshgroups
+.enabled
+.enable 1
+.enable 1,5,6,9
+.disable 1
+.disable 1,5,9
+.group 3
+.gstatus 3 Your status message
+
+📨 *CONTROLLED SENDING*
+.gstatus 3 Your status message
+.send 3 Your message here
+
+💡 *MULTI-SELECTION*
+.enable 1,5,6,9
+.disable 1,5,9
+`;
+
+            await sock.sendMessage(jid, {
+              text: menu.trim()
+            });
+
+            continue;
+          }
+
+          /*
+           * ==========================
+           * ALL GROUPS
+           * ==========================
+           */
+
+          if (command === ".groups") {
+            const groups =
+              getGroups();
+
+            await sock.sendMessage(jid, {
+              text:
+                formatGroupList(groups)
+            });
+
+            continue;
+          }
+
+          /*
+           * ==========================
+           * ENABLE MULTIPLE GROUPS
+           * ==========================
+           */
+
+          if (command === ".enable") {
+            const indexes =
+              parseIndexes(argument);
+
+            if (!indexes.length) {
+              await sock.sendMessage(jid, {
+                text:
+                  "❌ Usage:\n.enable 1,5,6,9"
+              });
+
+              continue;
+            }
+
+            const groups =
+              getGroups();
+
+            const validIndexes = [];
+            const invalidIndexes = [];
+
+            for (const index of indexes) {
+              if (
+                index >= 1 &&
+                index <= groups.length
+              ) {
+                validIndexes.push(index);
+              } else {
+                invalidIndexes.push(index);
+              }
+            }
+
+            const ids =
+              validIndexes.map(
+                index =>
+                  groups[index - 1].id
+              );
+
+            setMultipleEnabled(
+              ids,
+              true
+            );
+
+            let response =
+              "🟢 *GROUPS ENABLED*\n\n";
+
+            validIndexes.forEach(index => {
+              response +=
+                `✅ ${String(index).padStart(2, "0")}. ${groups[index - 1].name}\n`;
+            });
+
+            if (invalidIndexes.length) {
+              response +=
+                `\n⚠️ Invalid numbers: ${invalidIndexes.join(", ")}`;
+            }
+
+            await sock.sendMessage(jid, {
+              text: response.trim()
+            });
+
+            continue;
+          }
+
+          /*
+           * ==========================
+           * DISABLE MULTIPLE GROUPS
+           * ==========================
+           */
+
+          if (command === ".disable") {
+            const indexes =
+              parseIndexes(argument);
+
+            if (!indexes.length) {
+              await sock.sendMessage(jid, {
+                text:
+                  "❌ Usage:\n.disable 1,5,6"
+              });
+
+              continue;
+            }
+
+            const groups =
+              getGroups();
+
+            const validIndexes = [];
+            const invalidIndexes = [];
+
+            for (const index of indexes) {
+              if (
+                index >= 1 &&
+                index <= groups.length
+              ) {
+                validIndexes.push(index);
+              } else {
+                invalidIndexes.push(index);
+              }
+            }
+
+            const ids =
+              validIndexes.map(
+                index =>
+                  groups[index - 1].id
+              );
+
+            setMultipleEnabled(
+              ids,
+              false
+            );
+
+            let response =
+              "🔴 *GROUPS DISABLED*\n\n";
+
+            validIndexes.forEach(index => {
+              response +=
+                `❌ ${String(index).padStart(2, "0")}. ${groups[index - 1].name}\n`;
+            });
+
+            if (invalidIndexes.length) {
+              response +=
+                `\n⚠️ Invalid numbers: ${invalidIndexes.join(", ")}`;
+            }
+
+            await sock.sendMessage(jid, {
+              text: response.trim()
+            });
+
+            continue;
+          }
+
+          /*
+           * ==========================
+           * ENABLED GROUPS
+           * ==========================
+           */
+
+          if (command === ".enabled") {
+            const groups =
+              getEnabledGroups();
+
+            if (!groups.length) {
+              await sock.sendMessage(jid, {
+                text:
+                  "📭 No groups are currently enabled."
+              });
+
+              continue;
+            }
+
+            let response =
+              "🟢 *ENABLED GROUPS*\n\n";
+
+            groups.forEach((group, index) => {
+              response +=
+                `${index + 1}. ${group.name}\n`;
+            });
+
+            response +=
+              `\nTotal enabled: ${groups.length}`;
+
+            await sock.sendMessage(jid, {
+              text: response
+            });
+
+            continue;
+          }
+
+          /*
+           * ==========================
+           * GROUP DETAILS
+           * ==========================
+           */
+
+          if (command === ".group") {
+            const index =
+              Number(argument);
+
+            const groups =
+              getGroups();
+
+            if (
+              !Number.isInteger(index) ||
+              index < 1 ||
+              index > groups.length
+            ) {
+              await sock.sendMessage(jid, {
+                text:
+                  "❌ Invalid group number.\n\nUse .groups to see the list."
+              });
+
+              continue;
+            }
+
+            const group =
+              groups[index - 1];
+
+            const status =
+              group.enabled
+                ? "🟢 ENABLED"
+                : "🔴 DISABLED";
+
+            const details = `
+👥 *GROUP DETAILS*
+
+Number: ${index}
+Name: ${group.name}
+Status: ${status}
+
+ID:
+${group.id}
+`;
+
+            await sock.sendMessage(jid, {
+              text: details.trim()
+            });
+
+            continue;
+          }
+
+          /*
+           * ==========================
+           * REFRESH GROUPS
+           * ==========================
+           */
+
+          if (
+            command === ".refreshgroups"
+          ) {
+            const groups =
+              await refreshGroups(sock);
+
+            await sock.sendMessage(jid, {
+              text:
+                `🔄 Groups refreshed.\n\n👥 Groups found: ${groups.length}`
+            });
+
+            continue;
+          }
+
+          /*
+           * ==========================
+           * STATS
+           * ==========================
+           */
+
+          if (command === ".stats") {
+            const groups =
+              getGroups();
+
+            const enabled =
+              groups.filter(
+                group => group.enabled
+              ).length;
+
+            const disabled =
+              groups.length - enabled;
+
+            const stats = `
+📊 *BOT STATS*
+
+👥 Total groups: ${groups.length}
+🟢 Enabled: ${enabled}
+🔴 Disabled: ${disabled}
+`;
+
+            await sock.sendMessage(jid, {
+              text: stats.trim()
+            });
+
+            continue;
+          }
+
+          /*
+           * ==========================
+           * GROUP STATUS
+           * ==========================
+           */
+
+          if (command === ".gstatus") {
+            const statusParts =
+              argument.split(/\s+/);
+
+            const index =
+              Number(statusParts.shift());
+
+            const statusText =
+              statusParts.join(" ").trim();
+
+            const groups =
+              getGroups();
+
+            if (
+              !Number.isInteger(index) ||
+              index < 1 ||
+              index > groups.length
+            ) {
+              await sock.sendMessage(jid, {
+                text:
+                  "❌ Invalid group number.\n\nUse .groups to see the group numbers."
+              });
+
+              continue;
+            }
+
+            if (!statusText) {
+              await sock.sendMessage(jid, {
+                text:
+                  "❌ Usage:\n.gstatus 3 Your status message"
+              });
+
+              continue;
+            }
+
+            const group =
+              groups[index - 1];
+
+            if (!group.enabled) {
+              await sock.sendMessage(jid, {
+                text:
+                  `⛔ ${group.name} is disabled.\n\nEnable it first with:\n.enable ${index}`
+              });
+
+              continue;
+            }
+
+            try {
+              console.log(
+                `📢 Sending Group Status to: ${group.name}`
+              );
+
+              await sock.sendMessage(
+                group.id,
+                {
+                  groupStatusMessage: {
+                    text: statusText
+                  }
+                }
+              );
+
+              await sock.sendMessage(jid, {
+                text:
+                  `✅ Group Status posted to:\n${group.name}`
+              });
+
+            } catch (error) {
+              console.error(
+                "❌ Group Status error:",
+                error
+              );
+
+              await sock.sendMessage(jid, {
+                text:
+                  `❌ Failed to post Group Status to:\n${group.name}\n\n${error.message}`
+              });
+            }
+
+            continue;
+          }
+
+          /*
+           * ==========================
+           * SINGLE GROUP SEND
+           * ==========================
+           */
+
+          if (command === ".send") {
+            const sendParts =
+              argument.split(/\s+/);
+
+            const index =
+              Number(sendParts.shift());
+
+            const message =
+              sendParts.join(" ").trim();
+
+            const groups =
+              getGroups();
+
+            if (
+              !Number.isInteger(index) ||
+              index < 1 ||
+              index > groups.length
+            ) {
+              await sock.sendMessage(jid, {
+                text:
+                  "❌ Invalid group number."
+              });
+
+              continue;
+            }
+
+            if (!message) {
+              await sock.sendMessage(jid, {
+                text:
+                  "❌ Usage:\n.send 3 Your message here"
+              });
+
+              continue;
+            }
+
+            const group =
+              groups[index - 1];
+
+            if (!group.enabled) {
+              await sock.sendMessage(jid, {
+                text:
+                  `⛔ ${group.name} is disabled.\n\nEnable it first with:\n.enable ${index}`
+              });
+
+              continue;
+            }
+
+            try {
+              await sock.sendMessage(
+                group.id,
+                {
+                  text: message
+                }
+              );
+
+              await sock.sendMessage(jid, {
+                text:
+                  `✅ Message sent to:\n${group.name}`
+              });
+            } catch (error) {
+              await sock.sendMessage(jid, {
+                text:
+                  `❌ Failed to send to:\n${group.name}\n\n${error.message}`
+              });
+            }
+
+            continue;
+          }
+
+          /*
+           * ==========================
+           * UNKNOWN COMMAND
+           * ==========================
+           */
+
+          await sock.sendMessage(jid, {
+            text:
+              `❓ Unknown command: ${command}\n\nUse .menu to see available commands.`
+          });
+        }
+      } catch (error) {
+        console.error(
+          "❌ Message handler error:",
+          error
+        );
+      }
+    }
+  );
+}
+
+/*
+ * ==========================
+ * GLOBAL ERRORS
+ * ==========================
+ */
+
+process.on(
+  "uncaughtException",
+  error => {
+    console.error(
+      "❌ Uncaught Exception:",
+      error
+    );
+  }
+);
+
+process.on(
+  "unhandledRejection",
+  error => {
+    console.error(
+      "❌ Unhandled Rejection:",
+      error
+    );
+  }
+);
+
+console.log("");
+console.log("🚀 Starting WhatsApp Bot...");
+console.log("");
+
+startBot().catch(error => {
+  console.error(
+    "❌ Failed to start bot:",
+    error
+  );
+});
