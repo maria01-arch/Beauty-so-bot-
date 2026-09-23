@@ -14,48 +14,15 @@ const {
   getSetting,
   setSetting,
   setEnabled,
-  recordActivity,
-  getActivityMap,
   getSettings,
   getGroups,
   getEnabledGroups,
-  setMultipleEnabled,
-  getSudoList,
-  addSudo,
-  removeSudo,
-  isSudoJid,
-  muteUser,
-  unmuteUser,
-  isUserMuted
+  setMultipleEnabled
 } = require("./database/db");
 
 const BOT_NAME = "Beauty's Bot";
 const DEVELOPER = "Lord Samzy";
 const POWERED_BY = "Xchordlabs LLC";
-
-/*
- * ===================== CUSTOM DM MESSAGES =====================
- *
- * Add as many of these as you want. The key becomes the command word
- * (no dot, no spaces), the value is the full message sent to whoever
- * you target.
- *
- * Usage in the bot's own DM:
- *   .hi 2348012345678
- *   .rules 2348012345678
- *
- * That's it - no other code needs to change when you add a new one.
- */
-const CUSTOM_MESSAGES = {
-  hi: `Hello! 👋
-
-Thanks for reaching out. Here's the full explanation you asked about:
-
-[replace this with your actual message]`,
-
-  // rules: `Group rules:\n1. ...\n2. ...`,
-  // welcome: `Welcome! Glad to have you here.`,
-};
 
 const SESSION_DIR = "./session";
 
@@ -87,75 +54,45 @@ function printHeader() {
 }
 
 function getMenu() {
-  const now = new Date();
-  const dateStr = now.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-  const timeStr = now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-
   return `
-╭─❖ *${BOT_NAME.toUpperCase()}* ❖─╮
-
-   ✦ Premium WhatsApp Automation ✦
-
-   👤 Owner    : ${DEVELOPER}
-   ⚡ Engine   : ${POWERED_BY}
-   📅 ${dateStr}  •  🕒 ${timeStr}
-   ⏳ Uptime   : ${formatUptime(process.uptime())}
-
-╰────────────────────────╯
-
-┌─「 📊 OVERVIEW 」
-│ .ping
-│ .help / .menu
-│ .stats
-└─
-
-┌─「 📁 GROUP MANAGEMENT 」
-│ .groups
-│ .enabled
-│ .refreshgroups
-│ .group <no.>
-│ .enable 1,3,5 | 1-50 | all
-│ .disable 1,3,5 | 1-50 | all
-└─
-
-┌─「 📢 STATUS & BROADCAST 」
-│ .gstatus <text>
-│ .gstatus 1,3,5 <text>
-│ .gstatus 1-50 <text>
-│ .gstatus all <text>
-│ .broadcast <text>   ⚠️ instant, no delay
-│ .send <no.> <text>
-└─
-
-┌─「 🛡️ GROUP PROTECTION 」  (run inside the group)
-│ .protect
-│ .antilink delete | kick | off
-│ .antigcstatus on | off
-│ .antistatusmention on | off
-│ .mute / .unmute
-│ .muteuser 30m | 2h | 1d
-│ .unmuteuser
-│ .kick  (reply to spammer)
-└─
-
-┌─「 👥 MEMBER TOOLS 」  (run inside the group)
-│ .tagall <message>
-│ .accept <count>       approve join requests
-│ .listactive [count] [Nd]
-│ .listinactive [count] [Nd]
-│ .kick inactive 500 6d
-└─
-
-┌─「 👑 ACCESS 」
-│ .sudo add|remove|list <number>
-└─
-
-┌─「 💬 CUSTOM DM MESSAGES 」  (DM only)
-│ .hi <number>          e.g. .hi 2348012345678
-│ (add more in CUSTOM_MESSAGES near the top of index.js)
-└─
-
-   Type a command to get started ✨
+╭━━━〔 ${BOT_NAME} 〕━━━╮
+┃
+┃ 👤 Developer: ${DEVELOPER}
+┃ ⚡ Powered by: ${POWERED_BY}
+┃
+┣━━━〔 COMMANDS 〕━━━
+┃
+┃ .ping
+┃ .help
+┃ .menu
+┃
+┃ .groups
+┃ .enabled
+┃ .refreshgroups
+┃ .stats
+┃
+┃ .enable 1,3,5
+┃ .disable 1,3,5
+┃
+┃ .group 3
+┃
+┃ .send 3 Hello
+┃
+┃ .gstatus Hello
+┃ .gstatus 1,3,5 Hello
+┃ .gstatus 1-50 Hello
+┃ .gstatus all Hello
+┃
+┃ ── GROUP PROTECTION ──
+┃ (run these inside the group)
+┃
+┃ .protect
+┃ .antilink delete | kick | off
+┃ .antigcstatus on | off
+┃ .antistatusmention on | off
+┃ .kick  (reply to the spammer)
+┃
+╰━━━━━━━━━━━━━━━━━━━━╯
 `;
 }
 
@@ -433,44 +370,6 @@ async function removeParticipant(jid, who) {
 async function handleGroupGuard(msg) {
   const jid = msg.key.remoteJid;
 
-  // never moderate ourselves
-  if (msg.key.fromMe) return;
-
-  const sender = msg.key.participant || msg.participant;
-
-  if (!sender) return;
-
-  let metadata;
-
-  try {
-    metadata = await getMetadata(jid);
-  } catch (error) {
-    return;
-  }
-
-  // admins are exempt from every filter, including .muteuser
-  if (isAdmin(metadata, sender)) return;
-
-  // Per-user mute applies no matter what else is on/off - checked first
-  // so a muted spammer stays silenced even if antilink etc. are off.
-  //
-  // Resolve through findParticipant() the same way .muteuser stored it -
-  // the raw sender id from the event and the id in metadata.participants
-  // aren't guaranteed to be the same identifier form (jid vs lid), so a
-  // plain string match against the stored key can silently miss.
-  const senderRecord = findParticipant(metadata, sender);
-  const canonicalSender = senderRecord
-    ? (senderRecord.id || senderRecord.jid || senderRecord.lid)
-    : sender;
-
-  if (isUserMuted(jid, canonicalSender)) {
-    if (botIsAdmin(metadata)) {
-      await deleteMessage(jid, msg.key);
-      console.log(`🔇 muteuser → deleted a message from ${sender.split("@")[0]} in ${metadata.subject}`);
-    }
-    return;
-  }
-
   const settings = getSettings(jid);
 
   const antilink = settings.antilink || "off";
@@ -481,7 +380,23 @@ async function handleGroupGuard(msg) {
     return;
   }
 
+  // never moderate ourselves
+  if (msg.key.fromMe) return;
+
+  const sender = msg.key.participant || msg.participant;
+
+  let metadata;
+
+  try {
+    metadata = await getMetadata(jid);
+  } catch (error) {
+    return;
+  }
+
   if (!botIsAdmin(metadata)) return;
+
+  // admins are exempt from all filters
+  if (isAdmin(metadata, sender)) return;
 
   const senderName = sender ? sender.split("@")[0] : "someone";
 
@@ -522,68 +437,6 @@ async function handleGroupGuard(msg) {
       }
     }
   }
-}
-
-/*
- * Parses the shared "[count] [Nd]" argument style used by
- * .listactive / .listinactive / .kick inactive, e.g.:
- *
- *   "500"      -> { count: 500, days: defaultDays }
- *   "7D"       -> { count: null, days: 7 }
- *   "500 7D"   -> { count: 500, days: 7 }
- *   ""         -> { count: null, days: defaultDays }
- */
-function parseCountDays(argsStr, defaultDays = 7) {
-  const text = String(argsStr || "").trim();
-
-  const dayMatch = text.match(/(\d+)\s*d\b/i);
-  const days = dayMatch ? Number(dayMatch[1]) : defaultDays;
-
-  const withoutDays = text.replace(/(\d+)\s*d\b/i, "").trim();
-  const countMatch = withoutDays.match(/(\d+)/);
-  const count = countMatch ? Number(countMatch[1]) : null;
-
-  return { count, days };
-}
-
-/*
- * Returns group members split by activity, sorted so the LEAST recently
- * active (or never-seen) come first in the inactive list - useful both
- * for display and for deciding who a mass-kick should target first.
- */
-async function getMembersByActivity(jid, days) {
-  const metadata = await getMetadata(jid);
-  const activity = getActivityMap(jid);
-  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-
-  const withLastSeen = metadata.participants.map(p => {
-    const key = [p.id, p.jid, p.lid].filter(Boolean)[0];
-    return { participant: p, key, lastSeen: activity[key] || 0 };
-  });
-
-  const active = withLastSeen.filter(x => x.lastSeen >= cutoff);
-  const inactive = withLastSeen
-    .filter(x => x.lastSeen < cutoff)
-    .sort((a, b) => a.lastSeen - b.lastSeen); // oldest / never-seen first
-
-  return { metadata, active, inactive, total: metadata.participants.length };
-}
-
-/* "30m" / "2h" / "1d" / "45" (bare minutes) -> milliseconds, or null if unparseable */
-function parseDuration(input) {
-  const text = String(input || "").trim().toLowerCase();
-
-  const m = text.match(/^(\d+)\s*(m|min|mins|h|hr|hrs|hour|hours|d|day|days)?$/);
-
-  if (!m) return null;
-
-  const value = Number(m[1]);
-  const unit = m[2] || "m";
-
-  if (/^h/.test(unit)) return value * 60 * 60 * 1000;
-  if (/^d/.test(unit)) return value * 24 * 60 * 60 * 1000;
-
-  return value * 60 * 1000; // minutes default
 }
 
 function describeSendError(error) {
@@ -655,63 +508,24 @@ async function sendGroupStatus(group, text, attempt = 1) {
   console.log(`✅ Group Status sent → ${group.name}`);
 }
 
-/*
- * Group statuses only render for other members if the bot is ALLOWED to
- * post there - WhatsApp enforces this server-side and still acks the
- * relay either way, so we have to check ourselves instead of trusting
- * a "successful" send.
- *
- * "Allowed" means: the bot is a group admin, OR the group is not locked
- * to "only admins can send messages" (metadata.announce === true is that
- * lock). Confirmed against the account's own past experience - a group
- * that was announce-locked before a number change kept rejecting posts
- * from the new, non-admin number even after re-checking; the fix is to
- * check the actual announce flag rather than assuming admin is always
- * required.
- */
-async function canPostGroupStatus(groupId) {
-  try {
-    const metadata = await getMetadata(groupId);
-    return botIsAdmin(metadata) || !metadata.announce;
-  } catch (error) {
-    // if we can't even read metadata, don't block the send on that alone
-    return true;
-  }
-}
-
-/*
- * delayMs: null means "no delay at all" - used by .broadcast.
- * Anything else is a fixed number of ms to wait between sends.
- */
-async function sendSelectedGroupStatuses(groups, text, delayMs = () => 2000 + Math.floor(Math.random() * 6000)) {
+async function sendSelectedGroupStatuses(groups, text) {
   if (!groups.length) {
     return {
       sent: 0,
-      failed: 0,
-      skippedLocked: []
+      failed: 0
     };
   }
 
   let sent = 0;
   let failed = 0;
-  const skippedLocked = [];
 
   for (const group of groups) {
-    const allowed = await canPostGroupStatus(group.id);
-
-    if (!allowed) {
-      skippedLocked.push(group.name);
-      console.log(`⛔ Skipped (announce-locked, bot not admin) → ${group.name}`);
-      continue;
-    }
-
     try {
       await sendGroupStatus(group, text);
       sent++;
 
-      if (delayMs !== null) {
-        await sleep(typeof delayMs === "function" ? delayMs() : delayMs);
-      }
+      // Conservative, jittered delay so the pattern is not perfectly regular
+      await sleep(8000 + Math.floor(Math.random() * 4000));
     } catch (error) {
       failed++;
 
@@ -723,24 +537,8 @@ async function sendSelectedGroupStatuses(groups, text, delayMs = () => 2000 + Ma
 
   return {
     sent,
-    failed,
-    skippedLocked
+    failed
   };
-}
-
-function formatUptime(seconds) {
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-
-  const parts = [];
-  if (d) parts.push(`${d}d`);
-  if (h) parts.push(`${h}h`);
-  if (m) parts.push(`${m}m`);
-  parts.push(`${s}s`);
-
-  return parts.join(" ");
 }
 
 async function handleCommand(msg, text) {
@@ -749,70 +547,17 @@ async function handleCommand(msg, text) {
 
   const args = text.slice(parts[0].length).trim();
 
-  // ---- custom DM message dispatcher (see CUSTOM_MESSAGES above) ----
-  const customKey = command.slice(1);
-
-  if (Object.prototype.hasOwnProperty.call(CUSTOM_MESSAGES, customKey)) {
-    const jid = msg.key.remoteJid;
-    const numMatch = args.match(/\d{7,}/);
-
-    if (!numMatch) {
-      await sock.sendMessage(jid, {
-        text: `Usage: .${customKey} 2348012345678\n\nSends the "${customKey}" message straight to that person's DM.`
-      });
-      return;
-    }
-
-    const targetJid = `${numMatch[0]}@s.whatsapp.net`;
-
-    try {
-      await sock.sendMessage(targetJid, { text: CUSTOM_MESSAGES[customKey] });
-
-      await sock.sendMessage(jid, {
-        text: `✅ Sent "${customKey}" message to ${numMatch[0]}.`
-      });
-    } catch (error) {
-      await sock.sendMessage(jid, {
-        text: `❌ Could not send to ${numMatch[0]}: ${error.message}\n\n(They may not be on WhatsApp, or have blocked this number.)`
-      });
-    }
-
-    return;
-  }
-
   switch (command) {
 
-    case ".ping": {
-      const jid = msg.key.remoteJid;
-
-      // Network/WhatsApp-server delay: from when the message was sent
-      // on-device to when this process picked it up.
-      const sentAt = Number(msg.messageTimestamp) * 1000;
-      const networkMs = sentAt ? Date.now() - sentAt : null;
-
-      // Processing/round-trip delay: how long it takes this process to
-      // actually push a reply back out.
-      const start = Date.now();
-
-      await sock.sendMessage(jid, {
-        text: "🏓 Pong!"
-      });
-
-      const responseMs = Date.now() - start;
-
-      await sock.sendMessage(jid, {
-        text:
-`🏓 *PONG*
-
-Response: ${responseMs}ms${networkMs !== null ? `\nNetwork: ${networkMs}ms` : ""}
-Uptime: ${formatUptime(process.uptime())}
-
-*${BOT_NAME}* is online.`
-      });
-
-      console.log(`✅ Ping response sent (${responseMs}ms).`);
+    case ".ping":
+      await sock.sendMessage(
+        msg.key.remoteJid,
+        {
+          text: "🏓 Pong!\n\nBeauty's Bot is online."
+        }
+      );
+      console.log("✅ Ping response sent.");
       break;
-    }
 
 
     case ".help":
@@ -1090,122 +835,6 @@ ${group.name}`
     }
 
 
-    case ".sudo": {
-      const jid = msg.key.remoteJid;
-
-      // Only the owner's own number can grant/revoke sudo access -
-      // a sudo user is never allowed to add more sudo users.
-      if (!msg.key.fromMe) {
-        await sock.sendMessage(jid, {
-          text: "❌ Only the bot owner can manage sudo access."
-        });
-        break;
-      }
-
-      const [sub, ...rest] = args.split(/\s+/);
-      const number = rest.join("");
-
-      if (sub === "add" && number) {
-        addSudo(number);
-
-        await sock.sendMessage(jid, {
-          text: `✅ ${number.replace(/\D/g, "")} can now use all bot commands (DM and groups).`
-        });
-      } else if ((sub === "remove" || sub === "del") && number) {
-        const removed = removeSudo(number);
-
-        await sock.sendMessage(jid, {
-          text: removed
-            ? `✅ ${number.replace(/\D/g, "")} removed from sudo.`
-            : `That number was not in the sudo list.`
-        });
-      } else if (sub === "list") {
-        const list = getSudoList();
-
-        await sock.sendMessage(jid, {
-          text: list.length
-            ? `👑 SUDO USERS\n\n${list.join("\n")}`
-            : "No sudo users added yet."
-        });
-      } else {
-        await sock.sendMessage(jid, {
-          text:
-`Usage:
-
-.sudo add 2348012345678
-.sudo remove 2348012345678
-.sudo list
-
-A sudo user can run every command this account can, in DM and in any
-group the bot is in - including .gstatus, .broadcast and .kick. Only
-add numbers you fully trust.`
-        });
-      }
-
-      break;
-    }
-
-
-    case ".broadcast": {
-      if (!args) {
-        await sock.sendMessage(
-          msg.key.remoteJid,
-          {
-            text:
-`Usage:
-
-.broadcast Hello everyone
-
-Sends to every ENABLED group immediately, back-to-back, with NO delay
-between sends - unlike .gstatus, which paces itself.
-
-This is the fastest option but also the most likely to get the account
-rate-limited or flagged if you run it often. Use it sparingly.`
-          }
-        );
-        break;
-      }
-
-      const broadcastGroups = getEnabledGroups();
-
-      if (!broadcastGroups.length) {
-        await sock.sendMessage(
-          msg.key.remoteJid,
-          { text: "❌ No enabled groups to broadcast to." }
-        );
-        break;
-      }
-
-      await sock.sendMessage(
-        msg.key.remoteJid,
-        {
-          text: `📡 Broadcasting to ${broadcastGroups.length} groups, no delay...`
-        }
-      );
-
-      const broadcastResult = await sendSelectedGroupStatuses(
-        broadcastGroups,
-        args,
-        null // no delay
-      );
-
-      await sock.sendMessage(
-        msg.key.remoteJid,
-        {
-          text:
-`📡 BROADCAST COMPLETE
-
-Sent: ${broadcastResult.sent}
-Failed: ${broadcastResult.failed}${broadcastResult.skippedLocked.length ? `
-Skipped (locked, bot not admin): ${broadcastResult.skippedLocked.length}
-  ${broadcastResult.skippedLocked.join(", ")}` : ""}`
-        }
-      );
-
-      break;
-    }
-
-
     case ".gstatus": {
       if (!args) {
         await sock.sendMessage(
@@ -1301,9 +930,7 @@ Sending with a 3-second delay between groups...`
 `✅ Group Status operation finished.
 
 Sent: ${result.sent}
-Failed: ${result.failed}${result.skippedLocked.length ? `
-Skipped (locked, bot not admin): ${result.skippedLocked.length}
-  ${result.skippedLocked.join(", ")}` : ""}`
+Failed: ${result.failed}`
           }
         );
 
@@ -1353,9 +980,7 @@ Sending with a 3-second delay between groups...`
 `✅ Group Status operation finished.
 
 Sent: ${result.sent}
-Failed: ${result.failed}${result.skippedLocked.length ? `
-Skipped (locked, bot not admin): ${result.skippedLocked.length}
-  ${result.skippedLocked.join(", ")}` : ""}`
+Failed: ${result.failed}`
         }
       );
 
@@ -1445,21 +1070,12 @@ Current: ${getSetting(jid, "antilink", "off")}`
       const settings = getSettings(jid);
 
       let adminNote = "";
-      let statusNote = "";
 
       try {
         const metadata = await getMetadata(jid);
-        const admin = botIsAdmin(metadata);
-
-        adminNote = admin
+        adminNote = botIsAdmin(metadata)
           ? "✅ Bot is admin"
-          : "⚠️ Bot is NOT admin - filters (antilink/kick/delete) cannot act";
-
-        statusNote = admin
-          ? "✅ Group status: can post"
-          : metadata.announce
-            ? "❌ Group status: blocked (group is locked to admins-only and bot is not admin)"
-            : "✅ Group status: can post (group is open to all members)";
+          : "⚠️ Bot is NOT admin - filters cannot act";
       } catch (error) {
         adminNote = "⚠️ Could not read group info";
       }
@@ -1472,315 +1088,8 @@ Antilink: ${settings.antilink || "off"}
 Antigcstatus: ${settings.antigcstatus ? "on" : "off"}
 Antistatusmention: ${settings.antistatusmention ? "on" : "off"}
 
-${adminNote}
-${statusNote}`
+${adminNote}`
       });
-
-      break;
-    }
-
-
-    case ".mute":
-    case ".unmute": {
-      const jid = msg.key.remoteJid;
-
-      if (!jid.endsWith("@g.us")) {
-        await sock.sendMessage(jid, {
-          text: "❌ Run this inside the group you want to lock/unlock."
-        });
-        break;
-      }
-
-      let metadata;
-
-      try {
-        metadata = await getMetadata(jid);
-      } catch (error) {
-        await sock.sendMessage(jid, {
-          text: "❌ Could not read group info."
-        });
-        break;
-      }
-
-      if (!botIsAdmin(metadata)) {
-        await sock.sendMessage(jid, {
-          text: "❌ I need to be a group admin to lock/unlock the group."
-        });
-        break;
-      }
-
-      const locking = command === ".mute";
-
-      try {
-        await sock.groupSettingUpdate(jid, locking ? "announcement" : "not_announcement");
-        metadataCache.delete(jid);
-
-        await sock.sendMessage(jid, {
-          text: locking
-            ? "🔒 Group locked - only admins can send messages now."
-            : "🔓 Group unlocked - all members can send messages again."
-        });
-      } catch (error) {
-        await sock.sendMessage(jid, {
-          text: `❌ Could not change group setting: ${error.message}`
-        });
-      }
-
-      break;
-    }
-
-
-    case ".muteuser":
-    case ".unmuteuser": {
-      const jid = msg.key.remoteJid;
-
-      if (!jid.endsWith("@g.us")) {
-        await sock.sendMessage(jid, {
-          text: "❌ Run this inside the group."
-        });
-        break;
-      }
-
-      const quoted = msg.message?.extendedTextMessage?.contextInfo;
-
-      let target = null;
-
-      if (quoted?.mentionedJid?.length) {
-        target = quoted.mentionedJid[0];
-      } else if (quoted?.participant) {
-        target = quoted.participant;
-      } else {
-        const numMatch = args.match(/\d{7,}/);
-        if (numMatch) target = `${numMatch[0]}@s.whatsapp.net`;
-      }
-
-      if (!target) {
-        await sock.sendMessage(jid, {
-          text:
-command === ".muteuser"
-? `Usage:
-
-Reply to the spammer's message with .muteuser 30m
-or mention them: .muteuser @2348012345678 2h
-or pass the number: .muteuser 2348012345678 1d
-
-Accepts m (minutes), h (hours), d (days). Every message they send
-gets deleted automatically until the mute expires.`
-: `Usage:
-
-Reply to their message with .unmuteuser
-or: .unmuteuser 2348012345678`
-        });
-        break;
-      }
-
-      /*
-       * The number/mention you give resolves to a phone-based jid, but
-       * WhatsApp may report the actual sender in the group using a
-       * different identifier (@lid) that isn't derivable from the phone
-       * number. Resolve through the group's own participant list so the
-       * stored mute key matches whatever msg.key.participant will
-       * actually look like when this person sends a message.
-       */
-      let groupMetadata;
-
-      try {
-        groupMetadata = await getMetadata(jid);
-      } catch (error) {
-        await sock.sendMessage(jid, {
-          text: "❌ Could not read group member list."
-        });
-        break;
-      }
-
-      const participantRecord = findParticipant(groupMetadata, target);
-
-      if (!participantRecord) {
-        await sock.sendMessage(jid, {
-          text: "❌ Couldn't find that person in this group's member list."
-        });
-        break;
-      }
-
-      const canonicalTarget = participantRecord.id || participantRecord.jid || participantRecord.lid;
-
-      if (command === ".unmuteuser") {
-        const removed = unmuteUser(jid, canonicalTarget);
-
-        await sock.sendMessage(jid, {
-          text: removed
-            ? `🔊 @${canonicalTarget.split("@")[0]} unmuted.`
-            : `That person wasn't muted.`,
-          mentions: [canonicalTarget]
-        });
-        break;
-      }
-
-      const durationText = args.replace(/@?\d{7,}/, "").trim() || "30m";
-      const durationMs = parseDuration(durationText);
-
-      if (!durationMs) {
-        await sock.sendMessage(jid, {
-          text: `❌ Couldn't parse duration "${durationText}". Try 30m, 2h or 1d.`
-        });
-        break;
-      }
-
-      const expiresAt = Date.now() + durationMs;
-
-      muteUser(jid, canonicalTarget, expiresAt);
-
-      await sock.sendMessage(jid, {
-        text: `🔇 @${canonicalTarget.split("@")[0]} muted for ${durationText}. Every message they send will be deleted until then.`,
-        mentions: [canonicalTarget]
-      });
-
-      break;
-    }
-
-
-    case ".accept": {
-      const jid = msg.key.remoteJid;
-
-      if (!jid.endsWith("@g.us")) {
-        await sock.sendMessage(jid, {
-          text: "❌ Run this inside the group with pending join requests."
-        });
-        break;
-      }
-
-      if (!sock.groupRequestParticipantsList) {
-        await sock.sendMessage(jid, {
-          text: "❌ This library version doesn't support join-request approval."
-        });
-        break;
-      }
-
-      let metadata;
-
-      try {
-        metadata = await getMetadata(jid);
-      } catch (error) {
-        await sock.sendMessage(jid, {
-          text: "❌ Could not read group info."
-        });
-        break;
-      }
-
-      if (!botIsAdmin(metadata)) {
-        await sock.sendMessage(jid, {
-          text: "❌ I need to be a group admin to approve join requests."
-        });
-        break;
-      }
-
-      let pending;
-
-      try {
-        pending = await sock.groupRequestParticipantsList(jid);
-      } catch (error) {
-        await sock.sendMessage(jid, {
-          text: `❌ Could not fetch join requests: ${error.message}`
-        });
-        break;
-      }
-
-      if (!pending.length) {
-        await sock.sendMessage(jid, {
-          text: "📋 No pending join requests."
-        });
-        break;
-      }
-
-      const requested = args.trim();
-      const count = /^\d+$/.test(requested) ? Number(requested) : pending.length;
-      const targets = pending.slice(0, count).map(p => p.jid);
-
-      await sock.sendMessage(jid, {
-        text: `✅ Approving ${targets.length} of ${pending.length} pending request(s)...`
-      });
-
-      const BATCH_SIZE = 50;
-      let approved = 0;
-      let failed = 0;
-
-      for (let i = 0; i < targets.length; i += BATCH_SIZE) {
-        const batch = targets.slice(i, i + BATCH_SIZE);
-
-        try {
-          const results = await sock.groupRequestParticipantsUpdate(jid, batch, "approve");
-
-          approved += results.filter(r => r.status === "200").length;
-          failed += results.filter(r => r.status !== "200").length;
-        } catch (error) {
-          failed += batch.length;
-          console.error("⚠️ Batch approve failed:", error.message);
-        }
-
-        if (i + BATCH_SIZE < targets.length) {
-          await sleep(2000);
-        }
-      }
-
-      await sock.sendMessage(jid, {
-        text:
-`✅ JOIN REQUESTS
-
-Approved: ${approved}
-Failed: ${failed}${pending.length > targets.length ? `\nStill pending: ${pending.length - targets.length}` : ""}`
-      });
-
-      break;
-    }
-
-
-    case ".tagall": {
-      const jid = msg.key.remoteJid;
-
-      if (!jid.endsWith("@g.us")) {
-        await sock.sendMessage(jid, {
-          text: "❌ Run this inside the group you want to tag."
-        });
-        break;
-      }
-
-      let metadata;
-
-      try {
-        metadata = await getMetadata(jid);
-      } catch (error) {
-        await sock.sendMessage(jid, {
-          text: "❌ Could not read group member list."
-        });
-        break;
-      }
-
-      const participants = metadata.participants
-        .map(p => p.id || p.jid || p.lid)
-        .filter(Boolean);
-
-      // Large groups (communities can run past 1000 members) get split
-      // into batches so one message doesn't hit WhatsApp's mention/size cap.
-      const BATCH_SIZE = 250;
-
-      for (let i = 0; i < participants.length; i += BATCH_SIZE) {
-        const batch = participants.slice(i, i + BATCH_SIZE);
-        const lines = batch.map(id => `@${id.split("@")[0].split(":")[0]}`);
-        const part = Math.floor(i / BATCH_SIZE) + 1;
-        const totalParts = Math.ceil(participants.length / BATCH_SIZE);
-
-        await sock.sendMessage(jid, {
-          text:
-`📢 TAG ALL (${participants.length} members${totalParts > 1 ? ` - part ${part}/${totalParts}` : ""})
-${args && part === 1 ? `\n${args}\n` : ""}
-${lines.join(" ")}`,
-          mentions: batch
-        });
-
-        if (i + BATCH_SIZE < participants.length) {
-          await sleep(1500);
-        }
-      }
 
       break;
     }
@@ -1793,76 +1102,6 @@ ${lines.join(" ")}`,
         await sock.sendMessage(jid, {
           text: "❌ Run this inside a group."
         });
-        break;
-      }
-
-      // .kick inactive 500 6D -> mass-kick up to 500 members who have
-      // been inactive for at least 6 days (oldest / never-seen first)
-      if (/^inactive\b/i.test(args.trim())) {
-        const rest = args.trim().replace(/^inactive\b/i, "");
-        const { count, days } = parseCountDays(rest, 7);
-
-        let bucket;
-
-        try {
-          bucket = await getMembersByActivity(jid, days);
-        } catch (error) {
-          await sock.sendMessage(jid, {
-            text: "❌ Could not read group member list."
-          });
-          break;
-        }
-
-        if (!botIsAdmin(bucket.metadata)) {
-          await sock.sendMessage(jid, {
-            text: "❌ I need to be a group admin to remove anyone."
-          });
-          break;
-        }
-
-        const targets = (count ? bucket.inactive.slice(0, count) : bucket.inactive)
-          .map(x => x.key)
-          .filter(Boolean);
-
-        if (!targets.length) {
-          await sock.sendMessage(jid, {
-            text: `📋 No members inactive for ${days}+ days.`
-          });
-          break;
-        }
-
-        await sock.sendMessage(jid, {
-          text: `👢 Kicking ${targets.length} member(s) inactive for ${days}+ days...`
-        });
-
-        const removed = [];
-        const failed = [];
-
-        for (const target of targets) {
-          if (isAdmin(bucket.metadata, target)) {
-            failed.push(`${target.split("@")[0]} (admin)`);
-            continue;
-          }
-
-          const ok = await removeParticipant(jid, target);
-
-          if (ok) {
-            removed.push(target.split("@")[0]);
-          } else {
-            failed.push(target.split("@")[0]);
-          }
-
-          await sleep(1200);
-        }
-
-        await sock.sendMessage(jid, {
-          text:
-`👢 MASS KICK COMPLETE (inactive ${days}+ days)
-
-Removed: ${removed.length}
-Failed: ${failed.length}${failed.length ? `\n${failed.slice(0, 30).join(", ")}${failed.length > 30 ? ` ...and ${failed.length - 30} more` : ""}` : ""}`
-        });
-
         break;
       }
 
@@ -1938,79 +1177,6 @@ or pass the number: .kick 2348012345678`
 
 Removed: ${removed.length ? removed.join(", ") : "none"}${failed.length ? `\nFailed: ${failed.join(", ")}` : ""}`
       });
-
-      break;
-    }
-
-
-    case ".listactive":
-    case ".listinactive": {
-      const jid = msg.key.remoteJid;
-
-      if (!jid.endsWith("@g.us")) {
-        await sock.sendMessage(jid, {
-          text: "❌ Run this inside the group you want to check."
-        });
-        break;
-      }
-
-      const wantActive = command === ".listactive";
-
-      // .listactive 500      -> up to 500 active members, default 7d window
-      // .listactive 7D       -> all active members within 7 days
-      // .listactive 500 7D   -> up to 500, within 7 days
-      const { count, days } = parseCountDays(args, 7);
-
-      let bucket;
-
-      try {
-        bucket = await getMembersByActivity(jid, days);
-      } catch (error) {
-        await sock.sendMessage(jid, {
-          text: "❌ Could not read group member list."
-        });
-        break;
-      }
-
-      const pool = wantActive ? bucket.active : bucket.inactive;
-      const label = wantActive ? "ACTIVE" : "INACTIVE";
-
-      const matches = count ? pool.slice(0, count) : pool;
-
-      if (!matches.length) {
-        await sock.sendMessage(jid, {
-          text: `📋 ${label} (last ${days}d): none out of ${bucket.total} members.`
-        });
-        break;
-      }
-
-      // Split into batches so one message never exceeds WhatsApp's
-      // practical mention limit - no more silently capping at a fixed 80.
-      const BATCH_SIZE = 250;
-      const totalParts = Math.ceil(matches.length / BATCH_SIZE);
-
-      for (let i = 0; i < matches.length; i += BATCH_SIZE) {
-        const batch = matches.slice(i, i + BATCH_SIZE);
-        const part = Math.floor(i / BATCH_SIZE) + 1;
-
-        const lines = batch.map((x, idx) => {
-          const num = (x.key || "").split("@")[0].split(":")[0];
-          return `${i + idx + 1}. @${num}`;
-        });
-
-        await sock.sendMessage(jid, {
-          text:
-`📋 ${label} MEMBERS (last ${days}d)${totalParts > 1 ? ` - part ${part}/${totalParts}` : ""}
-${matches.length} of ${bucket.total} members${count ? ` (showing up to ${count})` : ""}
-
-${lines.join("\n")}${!wantActive && part === totalParts ? "\n\nNote: only counts activity the bot has seen since it started tracking. A long-silent member is not necessarily inactive on WhatsApp overall." : ""}`,
-          mentions: batch.map(x => x.key).filter(Boolean)
-        });
-
-        if (i + BATCH_SIZE < matches.length) {
-          await sleep(1500);
-        }
-      }
 
       break;
     }
@@ -2120,50 +1286,28 @@ async function startBot() {
 
         if (jid.endsWith("@g.us")) {
 
-          // Track who's actually talking, for .listactive / .listinactive
-          const activitySender = msg.key.participant || msg.participant;
-
-          if (activitySender && !msg.key?.fromMe) {
-            try {
-              recordActivity(jid, activitySender);
-            } catch (error) {
-              // non-fatal
-            }
-          }
-
-          // Run protection filters regardless of who sent the message
+          // Run protection filters, then allow owner commands in-group
           try {
             await handleGroupGuard(msg);
           } catch (error) {
             console.error("⚠️ Guard error:", error.message);
           }
 
-          const groupSender = msg.key.participant || msg.participant;
-          const isOwner = !!msg.key?.fromMe;
-          const isSudo = !isOwner && isSudoJid(groupSender);
-
-          if (!isOwner && !isSudo) {
+          if (!msg.key?.fromMe) {
             continue;
           }
 
           const groupText = getText(msg);
 
-          // Every command works in groups now - the check above already
-          // restricts this to the owner or an approved sudo user, so
-          // there is no need for a separate per-command whitelist.
-          if (groupText && groupText.trim().startsWith(".")) {
+          if (groupText && /^\.(antilink|antigcstatus|antistatusmention|kick|protect)\b/i.test(groupText.trim())) {
             await handleCommand(msg, groupText.trim());
           }
 
           continue;
         }
 
-        // In DM: accept the owner's own messages, or a DM from a sudo user
-        const dmSender = msg.key.participant || jid;
-        const isOwner = !!msg.key?.fromMe;
-        const isSudo = !isOwner && isSudoJid(dmSender);
-
-        if (!isOwner && !isSudo) {
+        // Only accept commands sent from the bot account
+        if (!msg.key?.fromMe) {
           continue;
         }
 
