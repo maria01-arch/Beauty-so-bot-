@@ -2286,50 +2286,52 @@ async function startBot() {
    *
    * If this session is already registered, this section
    * simply waits for the existing session.
+   *
+   * PAIR_NUMBER env var lets this run on a host with no real terminal
+   * (Railway, Katabump, etc.) - their web log viewers can display output
+   * but cannot send typed input back to the process, so rl.question()
+   * would hang forever waiting on stdin that will never arrive. If
+   * PAIR_NUMBER is set, skip the prompt entirely and pair with that
+   * number instead. Locally (Termux/SSH) leave it unset and you get the
+   * interactive prompt exactly as before.
    */
   if (!state.creds.registered) {
 
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout
-    });
+    const requestPairing = async rawNumber => {
+      const number = rawNumber.replace(/\D/g, "");
 
-    rl.question(
-      "📱 Enter your WhatsApp number with country code (example: 2348012345678): ",
-      async number => {
+      try {
+        console.log("🔑 Requesting pairing code...");
 
-        number = number.replace(/\D/g, "");
+        const code = await sock.requestPairingCode(number);
 
-        try {
-          console.log(
-            "🔑 Requesting pairing code..."
-          );
-
-          const code =
-            await sock.requestPairingCode(number);
-
-          console.log("");
-          console.log(
-            "╔══════════════════════════════════════╗"
-          );
-          console.log(
-            `║       PAIRING CODE: ${code}       ║`
-          );
-          console.log(
-            "╚══════════════════════════════════════╝"
-          );
-          console.log("");
-
-        } catch (error) {
-          console.error(
-            "❌ Pairing code failed:",
-            error.message
-          );
-        }
-
-        rl.close();
+        console.log("");
+        console.log("╔══════════════════════════════════════╗");
+        console.log(`║       PAIRING CODE: ${code}       ║`);
+        console.log("╚══════════════════════════════════════╝");
+        console.log("");
+      } catch (error) {
+        console.error("❌ Pairing code failed:", error.message);
       }
-    );
+    };
+
+    if (process.env.PAIR_NUMBER) {
+      console.log(`📱 Using PAIR_NUMBER from environment: ${process.env.PAIR_NUMBER}`);
+      await requestPairing(process.env.PAIR_NUMBER);
+    } else {
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+      });
+
+      rl.question(
+        "📱 Enter your WhatsApp number with country code (example: 2348012345678): ",
+        async number => {
+          await requestPairing(number);
+          rl.close();
+        }
+      );
+    }
   }
 }
 
